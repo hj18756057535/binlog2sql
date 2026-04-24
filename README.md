@@ -1,3 +1,147 @@
+
+
+---
+
+## 实战记录：Rocky Linux 8 + MySQL 8.0 + utf8mb4 误删恢复
+
+**适用环境**：Rocky Linux 8.10、MySQL 8.0+、字符集 utf8mb4
+
+---
+
+### 源码修改点
+
+**文件：`binlog2sql/binlog2sql_util.py` 第249行**
+
+原代码：
+
+```python
+block = block.decode("utf-8")
+```
+
+改为（支持 utf8mb4 特殊字符，忽略解码异常）：
+
+```python
+block = block.decode("utf-8", errors="ignore")
+```
+
+> 原因：utf8mb4 字符集下部分字节序列无法被严格 utf-8 解码，必须加 `errors="ignore"` 否则报 `UnicodeDecodeError`。
+
+---
+
+### 兼容版本依赖（MySQL 8.0 环境）
+
+```
+PyMySQL==0.9.3
+wheel>=0.29.0
+mysql-replication==0.13
+```
+
+> `PyMySQL 0.7.11` 不支持 MySQL 8.0 字符集（报 `KeyError: 255`）
+> `PyMySQL 1.x` 移除了 `pymysql.util`，与 `mysql-replication==0.13` 不兼容
+> `PyMySQL 0.9.3` 是唯一兼容两者的版本
+
+---
+
+### 服务端环境搭建（Rocky Linux 8）
+
+```bash
+yum install -y python3 git
+
+cd /root
+git clone https://github.com/danfengcao/binlog2sql.git
+cd binlog2sql
+
+python3 -m venv venv
+source venv/bin/activate
+
+pip install -r requirements.txt
+```
+
+---
+
+### 常用命令
+
+**生成完整回滚 SQL**
+
+```bash
+python binlog2sql/binlog2sql.py \
+  -h 127.0.0.1 -P 3306 \
+  -u root -p'your_password' \
+  -d your_db \
+  -t table1 table2 table3 \
+  --start-file binlog.000001 \
+  --start-datetime="2026-03-01 00:00:00" \
+  --stop-datetime="2026-04-23 23:59:59" \
+  --flashback \
+  > rollback.sql
+```
+
+**只恢复被删除的数据（DELETE → INSERT）**
+
+```bash
+python binlog2sql/binlog2sql.py \
+  -h 127.0.0.1 -P 3306 \
+  -u root -p'your_password' \
+  -d your_db \
+  -t table1 table2 table3 \
+  --start-file binlog.000001 \
+  --start-datetime="2026-03-01 00:00:00" \
+  --stop-datetime="2026-04-23 23:59:59" \
+  --flashback \
+  --sql-type DELETE \
+  > rollback_insert.sql
+```
+
+**flashback 模式对照表**
+
+| 原始操作 | 回滚 SQL |
+|----------|----------|
+| DELETE   | INSERT   |
+| INSERT   | DELETE   |
+| UPDATE   | UPDATE（新旧值互换） |
+
+---
+
+### 安全校验（执行前必做）
+
+```bash
+# 预览前50行，确认表名、数据正确
+head -50 rollback.sql
+
+# 统计行数，确认数据量
+wc -l rollback.sql
+```
+
+### 执行恢复
+
+```bash
+mysql -uroot -p your_db < rollback.sql
+```
+
+---
+
+### 踩坑记录
+
+| 方案 | 问题 | 结论 |
+|------|------|------|
+| Windows 本地运行 | 密码含 `&` 被 shell 截断、pymysqlreplication 不支持读本地文件 | 失败 |
+| 升级 PyMySQL 到 1.x | mysql-replication 0.13 依赖已删除的 `pymysql.util` | 失败 |
+| PyMySQL 0.7.11 连 MySQL 8.0 | 不支持 utf8mb4_0900_ai_ci，报 `KeyError: 255` | 失败 |
+| **服务端虚拟环境 + PyMySQL 0.9.3 + 源码修改** | — | **成功** |
+
+---
+
+### Binlog 保留策略确认
+
+```sql
+-- MySQL 8.0 使用秒为单位，30天 = 2592000秒
+SHOW VARIABLES LIKE 'binlog_expire_logs_seconds';
+
+-- 旧参数在 MySQL 8.0 已失效（值为0表示关闭）
+SHOW VARIABLES LIKE 'expire_logs_days';
+```
+
+
 binlog2sql
 ========================
 
