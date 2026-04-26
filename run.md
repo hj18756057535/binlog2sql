@@ -105,3 +105,11 @@ binlog_row_image = full
 ```sql
 GRANT SELECT, REPLICATION SLAVE, REPLICATION CLIENT ON *.* TO 'user'@'host';
 ```
+
+##  mysql的binlog工具
+
+mysqlbinlog --no-defaults \
+--base64-output=DECODE-ROWS -vv \
+--start-datetime="2026-03-01 00:00:00" \
+--stop-datetime="2026-04-23 23:59:59" \
+/fii/data/database/mysql/data/binlog.000001 > clean_binlog.txt
